@@ -1,0 +1,218 @@
+#!/bin/bash
+# Melchior FRANZ <melchior.franz@ginzinger.com>, Public Domain
+#
+SELF=${0##*/}    # basename
+NAME=${SELF%%.*} # without extensions
+
+DEFAULT_DEVICE=/dev/ttyUSB0
+DEFAULT_BAUDRATE=115200
+STTY_PARAMS="$(cat ~/.config/$NAME/stty 2>/dev/null)" # params set before those given on the command line
+ESC=$'\x1'  # Ctrl-A
+DELAY=0.5   # between $ESC and x etc.
+
+usage() {
+	cat <<-EOF
+
+	Usage: $SELF [<device:$DEFAULT_DEVICE> [<baudrate:$DEFAULT_BAUDRATE> [<stty-parameters>]]]
+
+	    -h, --help    show this help screen
+
+	At runtime the following key sequences are available, where ^A-x means
+	"Ctrl-A followed by x within $DELAY seconds":
+	$(runtime_help)
+
+	Scripts are sourced as bash scripts from .$NAME/[0-9] (if found) or from
+	~/.config/$NAME/[0-9].  Commands in these scripts can be prefixed with ':' or '_'
+	followed by at least one space. Lines are interpreted as follows:
+
+	    #: <comment>  shown in runtime help and --help/-h to describe the script's purpose
+	    <cmd>         run command locally on the host e.g. sleep 1
+	    : <cmd>       run command on remote target; <cmd> is interpreted locally as string
+	    : "<cmd>"     same as above
+	    _ <cmd>       run command locally, pipe stdout to remote target
+
+	For logging just 'tee' into the logfile:
+
+	    $ $SELF |& tee -a $NAME.log
+
+	$SELF reads additional stty options from ~/.config/$NAME/stty,
+	whereby the directory name is derived from the application name.  You can
+	just create a symbolic link to $SELF called, let's say, "term_alt" and if
+	you run that, it'll take the stty options from ~/.config/term_alt/stty and
+	the scripts from .term_alt/[0-9] or ~/.config/term_alt/[0-9].  stty parameters
+	given on the command line override those defined in the 'stty' config file.
+
+	EOF
+}
+
+runtime_help() {
+	cat <<-EOF
+
+	  ^A-^A  send ^A (Ctrl-A)
+	  ^A-a   send break signal (SysRq on Linux; e.g. ^A-a-b to reboot)
+	  ^A-h   show runtime help
+	  ^A-l   clear host screen (normally ^L, but that goes to remote target)
+	  ^A-s   draw separator line (same as intro line)
+	  ^A-x   exit $SELF
+
+	Some of the key sequences require a remote shell ready to accept commands:
+
+	  ^A-c   clear remote console, reset scroll region, export number of columns (requires 'stty')
+	  ^A-t   set local host time on remote target (requires 'date' and 'hwclock')
+	  ^A-u   set UTC host time on remote target (requires 'date' and 'hwclock')
+	  ^A-0   run script .$NAME/0 (if found) or ~/.config/$NAME/0; any other
+	         digit or uppercase letter can be used in the same way
+	EOF
+
+	declare -A script
+	for i in ~/.config/$NAME/? .$NAME/?; do
+		script[${i##*/}]="$i"
+	done
+	if [ ${#script} -gt 0 ]; then
+		echo -e "\nCustom commands:\n"
+		while read i; do
+			echo "  ^A-$i   $(grep '^#:' "${script[$i]}" | sed 's/^#:[ \t]\+//')"
+		done < <(xargs -n1 <<<${!script[@]} | sort)
+	fi
+}
+
+if ! args=$(getopt -l help -o h -- "$@"); then
+	usage
+	exit 1
+fi
+
+eval set -- "$args"
+while [ $# -gt 0 ]; do
+	case "$1" in
+	-h|--help)
+		usage
+		exit 0
+		;;
+	--)
+		shift
+		break
+		;;
+
+	*)
+		if [ "$1" ]; then
+			echo >&2 -e "Invalid option: $1\n"
+			usage
+			exit 1
+		fi
+		;;
+	esac
+	shift
+done
+
+DEV=${1:-$DEFAULT_DEVICE} && shift
+BAUDRATE=${1:-$DEFAULT_BAUDRATE} && shift
+RESTORE_SERIAL=$(stty -F $DEV -g) || exit
+RESTORE_CONSOLE=$(stty -g)
+COLS=$(tput cols) || COLS=${COLUMNS:-120}  # tput is part of ncurses; $COLUMNS should have been set by the shell
+REALDEV=$(readlink -f $DEV)
+
+if [ -t 1 ] && [ "$TERM" != "dumb" ]; then
+	BEGIN=$'\e[90m'  # dark grey for runtime info if the terminal understands color code
+	END=$'\e[0m'
+fi
+
+intro() { echo -n "$BEGIN{+$SELF -- $REALDEV -- $(date +"%Y/%m/%d %T") -- $$ -- ^A-h for help}$END"; }
+clr() { clear 2>/dev/null || echo -en "\e[3;J\e[H\e[2J"; }  # "clear" is part of ncurses
+
+terminate() {
+	echo -e "$END"
+	exec &>/dev/null
+	[ "$RXPID" ] && kill "$RXPID"
+	stty -F $DEV $RESTORE_SERIAL
+	stty $RESTORE_CONSOLE
+	exit 0
+}
+trap terminate EXIT INT HUP QUIT PIPE TERM
+
+break_signal() {
+	# lowering the baud rate and sending zero simulates a BREAK signal,
+	# even for ttyUSB; this triggers SysRq in Linux (CONFIG_MAGIC_SYSRQ)
+	stty -F $1 300
+	usleep 100000 || sleep 0.1 || true
+	echo >$1 -en "\0"
+	usleep 100000 || sleep 0.1 || true
+	stty -F $1 $BAUDRATE
+} 2>/dev/null
+
+run() {
+	[ -e "$1" ] || return 1
+	:() { echo -e "$@"; } >$DEV  # run cmd on the remote system
+	_() { "$@"; } >$DEV          # run cmd locally and pipe output to the remote system
+	. "$1"
+	return 0
+}
+
+stty -F $DEV $BAUDRATE raw nl0 cr0 tab0 bs0 vt0 ff0 cs8 cread clocal \
+	-parenb -parodd -hupcl -cstopb -crtscts -iutf8 -olcuc -ocrnl \
+	-onlcr -onocr -onlret -ofill -ofdel -iexten -echo -echoe -echok \
+	-echonl -noflsh -tostop -echoprt -echoctl -echoke $STTY_PARAMS "$@"
+
+stty -echo intr ^- quit ^- erase ^- kill ^- eof ^- eol ^- eol2 ^- swtch ^- \
+	susp ^- rprnt ^- werase ^- lnext ^- flush ^- # start ^- stop ^-
+
+intro && echo
+(
+	trap 'kill %cat 2>/dev/null' EXIT
+	cat $DEV
+	echo -n "$BEGIN{-$SELF -- $REALDEV -- $(date +"%Y/%m/%d %T")}$END"
+	kill $$
+	wait
+) & RXPID=$!
+
+while IFS= read -rn1 c; do
+	case "$c" in
+	$ESC)
+		read -rN1 -t$DELAY key
+		case "$key" in
+		h|\?)
+			echo "$BEGIN$(runtime_help)$END"
+			;;
+		a)
+			break_signal $DEV
+			;;
+		c)
+			# remote: set number of columns to that of local terminal; reset color; reset scroll region
+			echo >$DEV "stty cols $COLS; echo -en \"\e[0m\e7\e[r\e[999;999H\e[6n\e8\""
+			echo -n "$END"  # turn off color locally
+			;;
+		l)
+			clr && intro && echo
+			;;
+		s)
+			echo && intro && echo
+			;;
+		t)
+			echo >$DEV "date --set '$(date +%Y-%m-%d\ %T)' && " \
+				"for i in /dev/rtc*; do [ ! -h \$i ] && [ -c \$i ] && hwclock -f \$i -w; done"
+			;;
+		u)
+			echo >$DEV "date --set '$(date --utc +%Y-%m-%d\ %T)' && " \
+				"for i in /dev/rtc*; do [ ! -h \$i ] && [ -c \$i ] && hwclock -f \$i -w; done"
+			;;
+		x)
+			break
+			;;
+		[0-9]|[A-Z])
+			(run .$NAME/$key || run ~/.config/$NAME/$key || echo "${BEGIN}ERROR: script [.~]/.config/$NAME/$key$END")
+			;;
+		$ESC)
+			echo >$DEV -ne "$ESC"
+			;;
+		*)
+			echo >$DEV -ne "$ESC$key"
+			;;
+		esac
+		;;
+	"")
+		echo >$DEV -ne "\r"
+		;;
+	*)
+		echo >$DEV -ne "$c"
+		;;
+	esac
+done
