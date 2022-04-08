@@ -24,6 +24,7 @@ utilizing Weber-Fechner's law of perception
 
 
 Examples:
+
 	$ ./led_brightness_pwm_table_gen -c 32
 	#define LED_MAX_BRIGHTNESS 31
 
@@ -34,7 +35,6 @@ Examples:
 	        306, 438, 626, 895, 1281, 1831, 2619, 3746,
 	        5357, 7660, 10955, 15667, 22406, 32043, 45825, 65535,
 	};
-
 
 	$ ./led_brightness_pwm_table_gen 8 10000
 	0
