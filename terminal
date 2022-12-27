@@ -25,7 +25,7 @@ usage() {
 	~/.config/$NAME/[0-9].  Commands in these scripts can be prefixed with ':' or '_'
 	followed by at least one space. Lines are interpreted as follows:
 
-	    #: <comment>  shown in runtime help and --help/-h to describe the script's purpose
+	    #? <comment>  shown in runtime help and --help/-h to describe the script's purpose
 	    <cmd>         run command locally on the host e.g. sleep 1
 	    : <cmd>       run command on remote target; <cmd> is interpreted locally as string
 	    : "<cmd>"     same as above
@@ -57,7 +57,7 @@ runtime_help() {
 
 	Some of the key sequences require a remote shell ready to accept commands:
 
-	  ^A-c   clear remote console, reset scroll region, export number of columns (requires 'stty')
+	  ^A-r   reset remote console, export number of line/columns (requires 'stty')
 	  ^A-t   set local host time on remote target (requires 'date' and 'hwclock')
 	  ^A-u   set UTC host time on remote target (requires 'date' and 'hwclock')
 	  ^A-0   run script .$NAME/0 (if found) or ~/.config/$NAME/0; any other
@@ -66,12 +66,12 @@ runtime_help() {
 
 	declare -A script
 	for i in ~/.config/$NAME/? .$NAME/?; do
-		script[${i##*/}]="$i"
+		[ -e "$i" ] && script[${i##*/}]="$i"
 	done
 	if [ ${#script} -gt 0 ]; then
 		echo -e "\nCustom commands:\n"
 		while read i; do
-			echo "  ^A-$i   $(grep '^#:' "${script[$i]}" | sed 's/^#:[ \t]\+//')"
+			echo "  ^A-$i   $(grep '^#?' "${script[$i]}" | sed 's/^#?[ \t]\+//')"
 		done < <(xargs -n1 <<<${!script[@]} | sort)
 	fi
 }
@@ -108,7 +108,6 @@ DEV=${1:-$DEFAULT_DEVICE} && shift
 BAUDRATE=${1:-$DEFAULT_BAUDRATE} && shift
 RESTORE_SERIAL=$(stty -F $DEV -g) || exit
 RESTORE_CONSOLE=$(stty -g)
-COLS=$(tput cols) || COLS=${COLUMNS:-120}  # tput is part of ncurses; $COLUMNS should have been set by the shell
 REALDEV=$(readlink -f $DEV)
 
 if [ -t 1 ] && [ "$TERM" != "dumb" ]; then
@@ -175,13 +174,13 @@ while IFS= read -rn1 c; do
 		a)
 			break_signal $DEV
 			;;
-		c)
-			# remote: set number of columns to that of local terminal; reset color; reset scroll region
-			echo >$DEV "stty cols $COLS; echo -en \"\e[0m\e7\e[r\e[999;999H\e[6n\e8\""
-			echo -n "$END"  # turn off color locally
-			;;
 		l)
 			clr && intro && echo
+			;;
+		r)
+			read ROWS COLS < <(stty size)
+			echo >$DEV "reset 2>/dev/null || echo -en \"\e[0m\e7\e[r\e[999;999H\e[6n\e8\"; " \
+				"stty cols $COLS rows $ROWS; export TERM=$TERM; export COLUMNS=$COLS; export LINES=$ROWS"
 			;;
 		s)
 			echo && intro && echo
