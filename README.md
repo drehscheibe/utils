@@ -78,3 +78,15 @@ access to Embedded Linux etc. and more.
 - easy to extend
 - can run scripts (but doesn't have "expect" functionality, so you
   need to work with delays)
+
+
+## tree.sh
+Simple tree implementation that also works with the busybox shell if
+you replace '#!/bin/bash' with '#!/bin/sh'.
+- Supports only graphcial UTF characters for tree lines.
+- Implements only two of *tree*'s options:
+  - --all/-a
+  - --level/-L
+- Adds one option that *tree* doesn't have:
+  - --dump/-z <num-lines> -- output contents of each file. This is
+    particularly useful for showing contents of sysfs files.
